@@ -4,30 +4,125 @@
     <meta charset="UTF-8">
     <title>Cinematic Map</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/simplelightbox/2.14.2/simple-lightbox.min.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/simplelightbox/2.14.2/simple-lightbox.min.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/exifr/dist/lite.umd.js"></script>
 
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; }
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; }
         #map { height: 100vh; width: 100vw; }
-        .photo-marker { border: 2px solid #fff; border-radius: 4px; overflow: hidden; cursor: pointer; }
-        .photo-marker img { width: 100%; height: 100%; object-fit: cover; }
-        .popup-card { width: 250px; text-align: center; }
-        .popup-card img { width: 100%; border: 3px solid white; border-radius: 4px; margin-bottom: 10px; cursor: zoom-in; }
-        .popup-info { font-size: 12px; text-align: left; color: #333; line-height: 1.5; }
-        /* 拡大時に余白をなくして、画像を最大限大きく表示 */
-        .sl-wrapper .sl-image img {
-            max-width: 100vw !important;
-            max-height: 100vh !important;
-            object-fit: contain !important;
-            padding: 0 !important;
+
+        /* --- 地図上のピンのデザイン --- */
+        .photo-marker { 
+            position: relative;
+            cursor: pointer;
         }
-        /* キャプションが画像に被らないよう調整 */
-        .sl-wrapper .sl-caption {
-            bottom: 20px;
+        .photo-marker img { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: cover; 
+            display: block;
+            border: 3px solid #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            background-color: white;
         }
+
+        /* ★ 近くの写真がまとまったときの件数バッジ（右上） ★ */
+        .photo-marker .cluster-badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            min-width: 26px;
+            height: 26px;
+            padding: 0 6px;
+            border-radius: 13px;
+            background: #222;
+            color: #fff;
+            font-size: 13px;
+            font-weight: bold;
+            line-height: 26px;
+            text-align: center;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+            border: 2px solid #fff;
+        }
+
+        /* markercluster側のデフォルト円やアニメーション線を非表示にし、写真アイコンだけ見せる */
+        .marker-cluster { background: none !important; }
+        .leaflet-cluster-spider-leg { display: none !important; }
+
+        /* ==========================================================
+           ★ 写真詳細ビュー（別ページ風の全画面オーバーレイ） ★
+           上75%: 写真 / 下25%: 撮影情報
+        ========================================================== */
+        #detail-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: #000;
+            z-index: 20000;
+            flex-direction: column;
+        }
+        #detail-overlay.open {
+            display: flex;
+        }
+
+        .detail-photo {
+            flex: 0 0 75%;
+            height: 75%;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .detail-photo img {
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+        }
+
+        .detail-info {
+            flex: 0 0 25%;
+            height: 25%;
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 16px 24px;
+            box-sizing: border-box;
+            color: #333;
+            font-size: 14px;
+            line-height: 1.9;
+            text-align: center;
+        }
+        .detail-info .exif-line {
+            display: block;
+        }
+
+        .detail-close {
+            position: absolute;
+            top: 16px;
+            right: 20px;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: rgba(0,0,0,0.5);
+            color: #fff;
+            font-size: 26px;
+            line-height: 44px;
+            text-align: center;
+            cursor: pointer;
+            z-index: 20010;
+            user-select: none;
+        }
+        .detail-close:hover {
+            background: rgba(0,0,0,0.75);
         }
     </style>
 </head>
@@ -35,78 +130,221 @@
     <div id="map"></div>
     <input type="file" id="file-input" style="display:none;" accept="image/jpeg">
 
-   <script>
-        const map = L.map('map').setView([35.6812, 139.7671], 13);
+    <!-- ★ 写真詳細ビュー（全画面） ★ -->
+    <div id="detail-overlay">
+        <div class="detail-close" id="detail-close">&times;</div>
+        <div class="detail-photo">
+            <img id="detail-photo-img" src="" alt="">
+        </div>
+        <div class="detail-info" id="detail-info"></div>
+    </div>
+
+    <script>
+        const map = L.map('map', { tap: true, touchZoom: true }).setView([35.6812, 139.7671], 13);
         L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {}).addTo(map);
 
         function formatSS(ss) {
-            if (!ss) return "N/A";
-            if (ss >= 1) return ss + "s";
-            return "1/" + Math.round(1 / ss) + "s";
+            if (!ss) return "不明";
+            if (ss >= 1) return Math.round(ss * 10) / 10 + "秒";
+            return "1/" + Math.round(1 / ss) + "秒";
         }
+
+        function formatDate(dateObj) {
+            if (!dateObj) return "不明";
+            return dateObj.getFullYear() + "/" + (dateObj.getMonth() + 1) + "/" + dateObj.getDate() + " " + 
+                   dateObj.getHours() + ":" + String(dateObj.getMinutes()).padStart(2, '0');
+        }
+
+        // --- 詳細ビューの開閉 ---
+        const detailOverlay = document.getElementById('detail-overlay');
+        const detailPhotoImg = document.getElementById('detail-photo-img');
+        const detailInfo = document.getElementById('detail-info');
+        const detailClose = document.getElementById('detail-close');
+
+        function openDetail(d) {
+            detailPhotoImg.src = d.url;
+            detailInfo.innerHTML =
+                `<span class="exif-line">撮影日時: ${d.info.date} ｜ カメラ: ${d.info.camera} ｜ レンズ: ${d.info.lens}</span>` +
+                `<span class="exif-line">焦点距離: ${d.info.focalLength} ｜ F値: f/${d.info.f} ｜ シャッタースピード: ${d.info.ss} ｜ ISO感度: ${d.info.iso}</span>`;
+            detailOverlay.classList.add('open');
+        }
+
+        function closeDetail() {
+            detailOverlay.classList.remove('open');
+        }
+
+        detailClose.addEventListener('click', closeDetail);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeDetail();
+        });
+
+        // --- 近くの写真をまとめるクラスターグループ ---
+        const markers = L.markerClusterGroup({
+            maxClusterRadius: 60,       // この距離(px)以内に写真が集まったらまとめる
+            showCoverageOnHover: false,
+            spiderfyOnMaxZoom: false,   // 最大ズームでも重なっている場合はまとまったまま
+            zoomToBoundsOnClick: true,  // クラスターをクリックしたらその範囲までズーム
+            iconCreateFunction: (cluster) => {
+                const childMarkers = cluster.getAllChildMarkers();
+                const count = childMarkers.length;
+                const firstUrl = childMarkers[0].options.photoUrl;
+                const size = 100;
+                return L.divIcon({
+                    className: 'photo-marker',
+                    html: `<img src="${firstUrl}"><div class="cluster-badge">${count}</div>`,
+                    iconSize: [size, size],
+                    iconAnchor: [size / 2, size / 2]
+                });
+            }
+        });
+        map.addLayer(markers);
 
         function createMarker(d) {
-            const html = `
-                <div class="popup-card">
-                    <a href="${d.url}" class="gallery-item"><img src="${d.url}"></a>
-                    <div class="popup-info">
-                        <b>Date:</b> ${d.info.date}<br>
-                        <b>Camera:</b> ${d.info.camera}<br>
-                        <b>Setting:</b> ${d.info.focal} | f/${d.info.f} | ISO${d.info.iso} | ${d.info.ss}
-                    </div>
-                </div>`;
-            L.marker([d.lat, d.lon], {
-                icon: L.divIcon({className: 'photo-marker', html: `<img src="${d.url}">`, iconSize: [50, 50]})
-            }).addTo(map).bindPopup(html);
-            new SimpleLightbox('.gallery-item');
+            // ★写真を一度読み込んで実際の縦横比を取得し、枠のサイズを自動調整★
+            const img = new Image();
+            const maxSide = 150; // 長辺の最大サイズ（この数値を変えれば全体の大きさが変わります）
+
+            img.onload = () => {
+                let w, h;
+                if (img.naturalWidth >= img.naturalHeight) {
+                    w = maxSide;
+                    h = Math.round(maxSide * img.naturalHeight / img.naturalWidth);
+                } else {
+                    h = maxSide;
+                    w = Math.round(maxSide * img.naturalWidth / img.naturalHeight);
+                }
+                addMarkerToMap(d, w, h);
+            };
+            img.onerror = () => {
+                // 読み込みに失敗した場合は正方形で表示
+                addMarkerToMap(d, maxSide, maxSide);
+            };
+            img.src = d.url;
         }
 
-        // 管理者判定
+        function addMarkerToMap(d, w, h) {
+            const marker = L.marker([d.lat, d.lon], {
+                photoUrl: d.url, // ★クラスター表示時にサムネイルとして使う★
+                icon: L.divIcon({
+                    className: 'photo-marker',
+                    html: `<img src="${d.url}">`,
+                    iconSize: [w, h],
+                    iconAnchor: [w / 2, h / 2]
+                })
+            });
+
+            // ピンをクリックしたら詳細ビュー（全画面）を開く
+            marker.on('click', () => {
+                openDetail(d);
+            });
+
+            markers.addLayer(marker);
+        }
+
         const urlParams = new URLSearchParams(window.location.search);
         const isAdmin = (urlParams.get('admin') === 'himitsu123');
 
-        // 1. 固定写真の表示
+        // 固定写真のデータ
         const fixedPhotos = [
             {
-                lat: 35.70362872103316, lon: 139.75351274013522, url: "20260621-DSC00377.jpg",
-                info: { "date":"2026/6/21 19:59:49","camera":"Sony α7C II","focal":"28mm","f":2.8,"iso":2500,"ss":"1/60s" }
+                lat: 35.70362872103316, 
+                lon: 139.75351274013522, 
+                url: "20260621-DSC00377.jpg",
+                info: {
+                    date: "2026/6/21 19:59",
+                    camera: "Sony α7C II",
+                    lens: "FE 28-70mm F2.8",
+                    focalLength: "28mm",
+                    f: "2.8",
+                    iso: "2500",
+                    ss: "1/60秒"
+                }
+            },
+            {
+                lat: 35.70556718744194,
+                lon: 139.75472955056676, // ★注意: 元の値が途中で切れているようです。正しい経度に直してください★
+                url: "DSC00681.jpg",
+                info: {
+                    date: "2026/6/21 19:59",
+                    camera: "Sony α7C II",
+                    lens: "FE 28-70mm F2.8",
+                    focalLength: "70mm",
+                    f: "3.2",
+                    iso: "50",
+                    ss: "1/500秒"
+                }
+            },
+                {
+                lat: 35.682616206518134,
+                lon: 139.761757850647, // ★注意: 元の値が途中で切れているようです。正しい経度に直してください★
+                url: "DSC00657.jpg",
+                info: {
+                    date: "2026/7/7 18:30",
+                    camera: "Sony α7C II",
+                    lens: "FE 28-70mm F2.8",
+                    focalLength: "70mm",
+                    f: "2.8",
+                    iso: "250",
+                    ss: "1/80秒"
+                }
+            },
+            {
+                lat: 35.65902226966424,
+                lon: 139.74686622619632, // ★注意: 元の値が途中で切れているようです。正しい経度に直してください★
+                url: "DSC00722.jpg",
+                info: {
+                    date: "2026/7/11 15:40",
+                    camera: "Sony α7C II",
+                    lens: "FE 28-70mm F2.8",
+                    focalLength: "54mm",
+                    f: "2.8",
+                    iso: "50",
+                    ss: "1/4000秒"
+                }
             }
         ];
         fixedPhotos.forEach(p => createMarker(p));
 
-        // 2. アップロード処理 (一本化)
         if (isAdmin) {
+            map.getContainer().addEventListener('dblclick', () => document.getElementById('file-input').click());
+
             document.getElementById('file-input').onchange = async (e) => {
                 const file = e.target.files[0];
-                const exif = await exifr.parse(file);
-                const data = {
-                    url: URL.createObjectURL(file),
-                    lat: exif.latitude, lon: exif.longitude,
-                    info: {
-                        date: exif.DateTimeOriginal ? exif.DateTimeOriginal.toLocaleString() : "不明",
-                        camera: exif.Model || '不明',
-                        focal: (exif.FocalLength || '0') + 'mm',
-                        f: exif.FNumber || '0',
-                        iso: exif.ISO || '0',
-                        ss: formatSS(exif.ExposureTime)
-                    }
+                if (!file) return;
+
+                const exifData = await exifr.parse(file).catch(() => ({}));
+                let lat = exifData.latitude;
+                let lon = exifData.longitude;
+
+                const processPhoto = (lat, lon) => {
+                    const data = {
+                        url: URL.createObjectURL(file),
+                        lat: lat, lon: lon,
+                        info: {
+                            date: formatDate(exifData.DateTimeOriginal),
+                            camera: ((exifData.Make || '') + ' ' + (exifData.Model || '')).trim() || '不明',
+                            lens: exifData.LensModel || exifData.LensMake || '不明',
+                            focalLength: (exifData.FocalLength ? exifData.FocalLength + 'mm' : '不明'),
+                            f: (exifData.FNumber || '不明'),
+                            iso: (exifData.ISO || '不明'),
+                            ss: formatSS(exifData.ExposureTime)
+                        }
+                    };
+                    createMarker(data);
+                    
+                    const outputJson = { lat: lat, lon: lon, url: file.name, info: data.info };
+                    console.log("=== コピー用データ ===");
+                    console.log(JSON.stringify(outputJson));
+                    alert("追加完了！F12キーでConsoleを開き、データを保存してください。");
                 };
 
-                // 場所が決まっていない場合のみクリックを待つ
-                if (data.lat && data.lon) {
-                    createMarker(data);
-                    console.log("追加データ:", JSON.stringify(data));
+                if (!lat || !lon) {
+                    alert("位置情報がありません。地図上をクリックしてください。");
+                    map.once('click', (ev) => processPhoto(ev.latlng.lat, ev.latlng.lng));
                 } else {
-                    alert("地図をクリックして場所を指定してください");
-                    map.once('click', (e) => { 
-                        data.lat = e.latlng.lat; 
-                        data.lon = e.latlng.lng; 
-                        createMarker(data);
-                        console.log("追加データ:", JSON.stringify(data));
-                    });
+                    processPhoto(lat, lon);
                 }
             };
-            map.getContainer().addEventListener('dblclick', () => document.getElementById('file-input').click());
         }
     </script>
 </body>
